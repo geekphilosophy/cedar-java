@@ -17,10 +17,9 @@
 package com.cedarpolicy.value;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import java.math.BigDecimal;
 import java.util.Objects;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 
 /**
  * Represents a Cedar fixed-point decimal extension value. Decimals are encoded as strings in
@@ -29,22 +28,21 @@ import java.util.regex.PatternSyntaxException;
 public class Decimal extends Value {
 
     private static class DecimalValidator {
-        private static final Pattern DECIMAL_PATTERN = Pattern.compile("^-?([0-9])*(\\.)([0-9]{0,4})$");
+        private static final Pattern DECIMAL_PATTERN =
+                Pattern.compile("^-?[0-9]+\\.[0-9]{1,4}$");
+        private static final BigDecimal RANGE_MIN = new BigDecimal("-922337203685477.5808");
+        private static final BigDecimal RANGE_MAX = new BigDecimal("922337203685477.5807");
 
         public static boolean validDecimal(String d) {
             if (d == null || d.isEmpty()) {
                 return false;
             }
-            d = d.trim();
-            if (d.length() > 21) {
-                return false; // 19digits, decimal point and - sign
-            }
-            try {
-                Matcher matcher = DECIMAL_PATTERN.matcher(d);
-                return matcher.matches();
-            } catch (PatternSyntaxException ex) {
+            if (!DECIMAL_PATTERN.matcher(d).matches()) {
                 return false;
             }
+
+            BigDecimal val = new BigDecimal(d);
+            return val.compareTo(RANGE_MIN) >= 0 && val.compareTo(RANGE_MAX) <= 0;
         }
     }
 
