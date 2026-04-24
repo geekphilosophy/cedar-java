@@ -31,11 +31,11 @@ jni = { version = "0.21.1", features = ["invocation"] }
 crate_type = ["cdylib"]
 
 [dependencies.cedar-policy]
-version = "4.0.0"
+version = "4.10.0"
 git = "https://github.com/cedar-policy/cedar"
-branch = "main"
+tag = "v4.10.0"
 
 [dependencies.cedar-policy-formatter]
-version = "4.0.0"
+version = "4.10.0"
 git = "https://github.com/cedar-policy/cedar"
-branch = "main"
+tag = "v4.10.0"
