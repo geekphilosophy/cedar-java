@@ -164,6 +164,43 @@ public final class Schema {
         }
     }
 
+    /**
+     * Converts a Cedar schema to JSON format with all common type references resolved
+     * to their concrete definitions. This is useful for programmatic schema analysis
+     * where you need a fully-resolved schema without any {@code EntityOrCommon} references.
+     *
+     * <p>If this schema is in JSON format, it will first be converted to Cedar format
+     * before resolving types.
+     *
+     * @return JsonNode representing the fully-resolved schema in JSON format
+     * @throws InternalException       If conversion or type resolution fails
+     * @throws IllegalStateException   If schema content is missing
+     * @throws JsonMappingException    If the result is invalid JSON
+     * @throws JsonProcessingException If JSON processing fails
+     */
+    public JsonNode toJsonWithResolvedTypes()
+            throws InternalException, JsonMappingException, JsonProcessingException,
+            IllegalStateException {
+        // The Rust FFI expects a Cedar schema string
+        String cedarStr;
+        if (type == JsonOrCedar.Cedar && schemaText.isPresent()) {
+            cedarStr = schemaText.get();
+        } else if (type == JsonOrCedar.Json && schemaJson.isPresent()) {
+            cedarStr = jsonToCedarJni(schemaJson.get().toString());
+        } else {
+            throw new IllegalStateException("No schema found");
+        }
+
+        String response = toJsonWithResolvedTypesJni(cedarStr);
+        JsonNode node = OBJECT_MAPPER.readTree(response);
+        if ("success".equals(node.path("type").asText())) {
+            return node.get("json");
+        } else {
+            String errors = node.has("errors") ? node.get("errors").toString() : "unknown error";
+            throw new InternalException(new String[]{errors});
+        }
+    }
+
     /** Specifies the schema format used. */
     public enum JsonOrCedar {
         /**
@@ -187,4 +224,6 @@ public final class Schema {
     private static native String jsonToCedarJni(String json) throws InternalException, NullPointerException;
 
     private static native String cedarToJsonJni(String cedar) throws InternalException, NullPointerException;
+
+    private static native String toJsonWithResolvedTypesJni(String cedarSchema);
 }

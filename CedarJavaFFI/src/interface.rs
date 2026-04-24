@@ -17,8 +17,9 @@ use cedar_policy::entities_errors::EntitiesError;
 #[cfg(feature = "partial-eval")]
 use cedar_policy::ffi::is_authorized_partial_json_str;
 use cedar_policy::ffi::{
-    schema_to_json, schema_to_text, PolicySet as PolicySetFFI, Schema as FFISchema,
-    SchemaToJsonAnswer, SchemaToTextAnswer,
+    schema_to_json, schema_to_json_with_resolved_types, schema_to_text,
+    PolicySet as PolicySetFFI, Schema as FFISchema, SchemaToJsonAnswer,
+    SchemaToJsonWithResolvedTypesAnswer, SchemaToTextAnswer,
 };
 use cedar_policy::{
     ffi::{is_authorized_json_str, validate_json_str},
@@ -798,6 +799,34 @@ pub fn get_json_schema_internal<'a>(
             Err(joined_errors.into())
         }
     }
+}
+
+#[jni_fn("com.cedarpolicy.model.schema.Schema")]
+pub fn toJsonWithResolvedTypesJni<'a>(
+    mut env: JNIEnv<'a>,
+    _: JClass,
+    cedar_schema: JString<'a>,
+) -> jstring {
+    let rust_str = match env.get_string(&cedar_schema) {
+        Ok(s) => s,
+        Err(_) => return build_err_obj(&env, "getting"),
+    };
+    let schema_str = match rust_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return build_err_obj(&env, "parsing"),
+    };
+
+    let ans = schema_to_json_with_resolved_types(schema_str);
+    let result = serde_json::to_string(&ans).unwrap_or_else(|e| {
+        serde_json::to_string(&Answer::fail_internally(format!(
+            "Failed to serialize response: {e}"
+        )))
+        .expect("could not serialize error")
+    });
+
+    env.new_string(result)
+        .expect("error creating Java string")
+        .into_raw()
 }
 
 #[cfg(test)]
