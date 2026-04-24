@@ -19,6 +19,7 @@ package com.cedarpolicy.model.entity;
 import com.cedarpolicy.value.EntityUID;
 import com.cedarpolicy.value.Value;
 import static com.cedarpolicy.CedarJson.objectReader;
+import static com.cedarpolicy.CedarJson.objectWriter;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 
@@ -151,6 +152,16 @@ public class Entity {
      */
     public Map<String, Value> getTags() {
         return tags;
+    }
+
+    /**
+     * Serialize this entity to a JSON string.
+     *
+     * @return JSON string representation of this entity
+     * @throws JsonProcessingException if serialization fails
+     */
+    public String toJson() throws JsonProcessingException {
+        return objectWriter().writeValueAsString(this);
     }
 
     /**

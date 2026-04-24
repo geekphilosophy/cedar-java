@@ -17,6 +17,7 @@
 package com.cedarpolicy.model.entity;
 
 import static com.cedarpolicy.CedarJson.objectReader;
+import static com.cedarpolicy.CedarJson.objectWriter;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -84,6 +85,16 @@ public class Entities {
         String jsonString = Files.readString(filePath);
         return new Entities(objectReader().forType(new TypeReference<Set<Entity>>() {
         }).readValue(jsonString));
+    }
+
+    /**
+     * Serialize this entity collection to a JSON string.
+     *
+     * @return JSON array string representation of all entities
+     * @throws JsonProcessingException if serialization fails
+     */
+    public String toJson() throws JsonProcessingException {
+        return objectWriter().writeValueAsString(entities);
     }
 
     @Override

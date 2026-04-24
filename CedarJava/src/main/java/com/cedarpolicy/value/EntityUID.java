@@ -114,6 +114,16 @@ public final class EntityUID extends Value {
         return new JsonEUID(type.toString(), id.toString());
     }
 
+    /**
+     * Serialize this entity UID to a JSON string.
+     *
+     * @return JSON object string with "type" and "id" fields
+     * @throws com.fasterxml.jackson.core.JsonProcessingException if serialization fails
+     */
+    public String toJson() throws com.fasterxml.jackson.core.JsonProcessingException {
+        return com.cedarpolicy.CedarJson.objectWriter().writeValueAsString(asJson());
+    }
+
     public static Optional<EntityUID> parseFromJson(JsonEUID euid) {
         return EntityTypeName.parse(euid.type).map(type -> new EntityUID(type, new EntityIdentifier(euid.id)));
     }
