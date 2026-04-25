@@ -17,14 +17,20 @@
 package com.cedarpolicy.model.policy;
 
 import static com.cedarpolicy.CedarJson.objectWriter;
+import com.cedarpolicy.SharedCedarInternals;
 import com.cedarpolicy.loader.LibraryLoader;
+import com.cedarpolicy.model.exception.AuthException;
+import com.cedarpolicy.model.exception.BadRequestException;
 import com.cedarpolicy.model.exception.InternalException;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -140,6 +146,92 @@ public class PolicySet {
     public static PolicySet parsePolicies(String policiesString) throws InternalException {
         PolicySet policySet = parsePoliciesJni(policiesString);
         return policySet;
+    }
+
+    // --- Caching support ---
+
+    private volatile String cacheId;
+
+    /**
+     * Mark this policy set for caching on the Rust side. The policies are
+     * pre-parsed immediately and reused on subsequent authorization calls.
+     * The cached data is automatically freed when this object is garbage collected.
+     *
+     * <p>Caching is a one-way operation. To use a different policy set, create a
+     * new {@code PolicySet} instance.
+     *
+     * <p>For the cached path to be used during authorization, both the policy set
+     * and any associated schema must be cached. If only the policy set is cached
+     * but the schema is not, authorization will fall back to the uncached path.
+     *
+     * <p>This method is idempotent — calling it multiple times has no effect.
+     *
+     * @throws AuthException if the policies fail to parse during caching.
+     */
+    public synchronized void cache() throws AuthException {
+        if (cacheId != null) {
+            return;
+        }
+        String id = UUID.randomUUID().toString();
+        preparseOnRustSide(id);
+        cacheId = id;
+        SharedCedarInternals.registerCleanup(this, new PolicySetCacheCleanup(id));
+    }
+
+    /**
+     * Get the cache key for this policy set, if cached.
+     *
+     * @return The cache key if cached, or empty if not cached.
+     */
+    public Optional<String> cacheKey() {
+        String id = cacheId;
+        if (id == null) {
+            return Optional.empty();
+        }
+        return Optional.of(id);
+    }
+
+    private void preparseOnRustSide(String id) throws AuthException {
+        try {
+            String input = objectWriter().writeValueAsString(
+                    new PreparsePolicySetRequest(id, this));
+            String response = SharedCedarInternals.callCedarJNI("PreparsePolicySet", input);
+            JsonNode node = new com.fasterxml.jackson.databind.ObjectMapper().readTree(response);
+            if (node.has("Failure")) {
+                throw new BadRequestException(
+                        new String[]{node.get("Failure").get("errors").toString()});
+            }
+        } catch (JsonProcessingException e) {
+            throw new AuthException("JSON Serialization Error", e);
+        } catch (IOException e) {
+            throw new AuthException("JSON Deserialization Error", e);
+        }
+    }
+
+    private static final class PolicySetCacheCleanup implements Runnable {
+        private final String id;
+
+        PolicySetCacheCleanup(String id) {
+            this.id = id;
+        }
+
+        @Override
+        public void run() {
+            SharedCedarInternals.removeCachedPolicySet(id);
+        }
+    }
+
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    private static final class PreparsePolicySetRequest {
+        @com.fasterxml.jackson.annotation.JsonProperty("policySetId")
+        final String policySetId;
+        @com.fasterxml.jackson.annotation.JsonProperty("policies")
+        final PolicySet policies;
+
+        PreparsePolicySetRequest(String policySetId, PolicySet policies) {
+            this.policySetId = policySetId;
+            this.policies = policies;
+        }
     }
 
     private static native PolicySet parsePoliciesJni(String policiesStr) throws InternalException, NullPointerException;

@@ -16,9 +16,14 @@
 
 package com.cedarpolicy.model.schema;
 
+import java.io.IOException;
 import java.util.Optional;
+import java.util.UUID;
 
+import com.cedarpolicy.SharedCedarInternals;
 import com.cedarpolicy.loader.LibraryLoader;
+import com.cedarpolicy.model.exception.AuthException;
+import com.cedarpolicy.model.exception.BadRequestException;
 import com.cedarpolicy.model.exception.InternalException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonMappingException;
@@ -178,6 +183,87 @@ public final class Schema {
          * https://docs.cedarpolicy.com/schema/human-readable-schema.html</a>
          */
         Cedar
+    }
+
+    // --- Caching support ---
+
+    private volatile String cacheId;
+
+    /**
+     * Mark this schema for caching on the Rust side. The schema is pre-parsed
+     * immediately and reused on subsequent authorization calls. The cached data
+     * is automatically freed when this object is garbage collected.
+     *
+     * <p>Caching is a one-way operation. To use a different schema, create a
+     * new {@code Schema} instance.
+     *
+     * <p>For the cached path to be used during authorization, both the schema
+     * and the policy set must be cached. If the policy set is cached but the
+     * schema is not, authorization will fall back to the uncached path.
+     *
+     * <p>This method is idempotent.
+     *
+     * @throws AuthException if the schema fails to parse during caching.
+     */
+    public synchronized void cache() throws AuthException {
+        if (cacheId != null) {
+            return;
+        }
+        String id = UUID.randomUUID().toString();
+        preparseOnRustSide(id);
+        cacheId = id;
+        SharedCedarInternals.registerCleanup(this, new SchemaCacheCleanup(id));
+    }
+
+    /**
+     * Get the cache key for this schema, if cached.
+     *
+     * @return The cache key if cached, or empty if not cached.
+     */
+    public Optional<String> cacheKey() {
+        String id = cacheId;
+        if (id == null) {
+            return Optional.empty();
+        }
+        return Optional.of(id);
+    }
+
+    private void preparseOnRustSide(String id) throws AuthException {
+        try {
+            String schemaValue;
+            if (type == JsonOrCedar.Cedar && schemaText.isPresent()) {
+                schemaValue = OBJECT_MAPPER.writeValueAsString(schemaText.get());
+            } else if (type == JsonOrCedar.Json && schemaJson.isPresent()) {
+                schemaValue = schemaJson.get().toString();
+            } else {
+                throw new AuthException("No schema content available");
+            }
+            String input = "{\"schemaName\":" + OBJECT_MAPPER.writeValueAsString(id)
+                    + ",\"schema\":" + schemaValue + "}";
+            String response = SharedCedarInternals.callCedarJNI("PreparseSchema", input);
+            JsonNode node = OBJECT_MAPPER.readTree(response);
+            if (node.has("Failure")) {
+                throw new BadRequestException(
+                        new String[]{node.get("Failure").get("errors").toString()});
+            }
+        } catch (JsonProcessingException e) {
+            throw new AuthException("JSON Serialization Error", e);
+        } catch (IOException e) {
+            throw new AuthException("JSON Deserialization Error", e);
+        }
+    }
+
+    private static final class SchemaCacheCleanup implements Runnable {
+        private final String id;
+
+        SchemaCacheCleanup(String id) {
+            this.id = id;
+        }
+
+        @Override
+        public void run() {
+            SharedCedarInternals.removeCachedSchema(id);
+        }
     }
 
     private static native String parseJsonSchemaJni(String schemaJson) throws InternalException, NullPointerException;
