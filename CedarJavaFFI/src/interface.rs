@@ -17,7 +17,7 @@ use cedar_policy::entities_errors::EntitiesError;
 #[cfg(feature = "partial-eval")]
 use cedar_policy::ffi::is_authorized_partial_json_str;
 use cedar_policy::ffi::{
-    schema_to_json, schema_to_text, AuthorizationAnswer, CheckParseAnswer, DetailedError,
+    schema_to_json, schema_to_text, AuthorizationAnswer, DetailedError, EntityUid as FfiEntityUid,
     PolicySet as PolicySetFFI, Schema as FFISchema, SchemaToJsonAnswer, SchemaToTextAnswer,
 };
 use cedar_policy::{
@@ -54,11 +54,7 @@ const V0_AUTH_PARTIAL_OP: &str = "AuthorizationPartialOperation";
 const V0_VALIDATE_OP: &str = "ValidateOperation";
 const V0_VALIDATE_LEVEL_OP: &str = "ValidateWithLevelOperation";
 const V0_VALIDATE_ENTITIES: &str = "ValidateEntities";
-const V0_PREPARSE_POLICY_SET: &str = "PreparsePolicySet";
-const V0_PREPARSE_SCHEMA: &str = "PreparseSchema";
 const V0_STATEFUL_AUTH_OP: &str = "StatefulAuthorizationOperation";
-const V0_REMOVE_CACHED_POLICY_SET: &str = "RemoveCachedPolicySet";
-const V0_REMOVE_CACHED_SCHEMA: &str = "RemoveCachedSchema";
 
 thread_local! {
     static AUTHORIZER: Authorizer = Authorizer::new();
@@ -121,29 +117,109 @@ pub fn callCedarJNI(
     call_cedar_jni(env, j_call, j_input)
 }
 
-/// JNI entry point for NativeHelpers (shared by CachedAuthorizationEngine)
-#[jni_fn("com.cedarpolicy.NativeHelpers")]
-pub fn callCedarJNI(
-    env: JNIEnv<'_>,
+/// Direct JNI entry point to pre-parse and cache a policy set.
+#[jni_fn("com.cedarpolicy.model.policy.PolicySet")]
+pub fn preparsePolicySetJni(
+    mut env: JNIEnv<'_>,
     _class: JClass<'_>,
-    j_call: JString<'_>,
-    j_input: JString<'_>,
-) -> jstring {
-    call_cedar_jni(env, j_call, j_input)
+    j_id: JString<'_>,
+    j_policies_json: JString<'_>,
+) {
+    let id: String = match env.get_string(&j_id) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    let policies_json: String = match env.get_string(&j_policies_json) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    let policy_set_ffi: PolicySetFFI = match serde_json::from_str(&policies_json) {
+        Ok(ps) => ps,
+        Err(e) => {
+            let _ = env.throw_new(
+                "com/cedarpolicy/model/exception/InternalException",
+                format!("Failed to parse policy set JSON: {e}"),
+            );
+            return;
+        }
+    };
+    match policy_set_ffi.parse() {
+        Ok(parsed) => {
+            CACHED_POLICY_SETS.insert(id, parsed);
+        }
+        Err(errors) => {
+            let msg = errors
+                .into_iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            let _ = env.throw_new(
+                "com/cedarpolicy/model/exception/InternalException",
+                format!("Failed to parse policies: {msg}"),
+            );
+        }
+    }
 }
 
-/// Direct JNI entry point to remove a cached policy set by ID (no JSON overhead).
-#[jni_fn("com.cedarpolicy.SharedCedarInternals")]
-pub fn removeCachedPolicySet(mut env: JNIEnv<'_>, _class: JClass<'_>, j_id: JString<'_>) {
+/// Direct JNI entry point to remove a cached policy set by ID.
+#[jni_fn("com.cedarpolicy.model.policy.PolicySet")]
+pub fn removeCachedPolicySetJni(mut env: JNIEnv<'_>, _class: JClass<'_>, j_id: JString<'_>) {
     if let Ok(id_str) = env.get_string(&j_id) {
         let id: String = id_str.into();
         CACHED_POLICY_SETS.remove(&id);
     }
 }
 
-/// Direct JNI entry point to remove a cached schema by ID (no JSON overhead).
-#[jni_fn("com.cedarpolicy.SharedCedarInternals")]
-pub fn removeCachedSchema(mut env: JNIEnv<'_>, _class: JClass<'_>, j_id: JString<'_>) {
+/// Direct JNI entry point to pre-parse and cache a schema.
+#[jni_fn("com.cedarpolicy.model.schema.Schema")]
+pub fn preparseSchemaJni(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    j_id: JString<'_>,
+    j_schema: JString<'_>,
+    is_cedar: u8,
+) {
+    let id: String = match env.get_string(&j_id) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    let schema_str: String = match env.get_string(&j_schema) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    let parse_result: std::result::Result<Schema, miette::Report> = if is_cedar != 0 {
+        Schema::from_cedarschema_str(&schema_str)
+            .map(|(schema, _warnings)| schema)
+            .map_err(|e| miette::Report::new(e))
+    } else {
+        let json_val: Value = match serde_json::from_str(&schema_str) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = env.throw_new(
+                    "com/cedarpolicy/model/exception/InternalException",
+                    format!("Failed to parse schema JSON: {e}"),
+                );
+                return;
+            }
+        };
+        Schema::from_json_value(json_val).map_err(|e| miette::Report::new(e))
+    };
+    match parse_result {
+        Ok(parsed) => {
+            CACHED_SCHEMAS.insert(id, parsed);
+        }
+        Err(error) => {
+            let _ = env.throw_new(
+                "com/cedarpolicy/model/exception/InternalException",
+                format!("Failed to parse schema: {error}"),
+            );
+        }
+    }
+}
+
+/// Direct JNI entry point to remove a cached schema by ID.
+#[jni_fn("com.cedarpolicy.model.schema.Schema")]
+pub fn removeCachedSchemaJni(mut env: JNIEnv<'_>, _class: JClass<'_>, j_id: JString<'_>) {
     if let Ok(id_str) = env.get_string(&j_id) {
         let id: String = id_str.into();
         CACHED_SCHEMAS.remove(&id);
@@ -166,11 +242,7 @@ pub(crate) fn call_cedar(call: &str, input: &str) -> String {
         V0_VALIDATE_OP => validate_json_str(input),
         V0_VALIDATE_ENTITIES => json_validate_entities(&input),
         V0_VALIDATE_LEVEL_OP => validate_with_level_json_str(input),
-        V0_PREPARSE_POLICY_SET => json_preparse_policy_set(input),
-        V0_PREPARSE_SCHEMA => json_preparse_schema(input),
         V0_STATEFUL_AUTH_OP => json_stateful_is_authorized(input),
-        V0_REMOVE_CACHED_POLICY_SET => json_remove_cached_policy_set(input),
-        V0_REMOVE_CACHED_SCHEMA => json_remove_cached_schema(input),
         _ => {
             let ires = Answer::fail_internally(format!("unsupported operation: {}", call));
             serde_json::to_string(&ires)
@@ -179,55 +251,6 @@ pub(crate) fn call_cedar(call: &str, input: &str) -> String {
     result.unwrap_or_else(|err| {
         panic!("failed to handle call {call} with input {input}\nError: {err}")
     })
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PreparsePolicySetCall {
-    policy_set_id: String,
-    policies: PolicySetFFI,
-}
-
-fn json_preparse_policy_set(input: &str) -> serde_json::Result<String> {
-    let call: PreparsePolicySetCall = serde_json::from_str(input)?;
-    let ans: CheckParseAnswer = match call.policies.parse() {
-        Ok(parsed) => {
-            CACHED_POLICY_SETS.insert(call.policy_set_id, parsed);
-            CheckParseAnswer::Success
-        }
-        Err(errors) => CheckParseAnswer::Failure {
-            errors: errors.into_iter().map(Into::into).collect(),
-        },
-    };
-    serde_json::to_string(&ans)
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PreparseSchemaCall {
-    schema_name: String,
-    schema: Value,
-}
-
-fn json_preparse_schema(input: &str) -> serde_json::Result<String> {
-    let call: PreparseSchemaCall = serde_json::from_str(input)?;
-    // Schema can be either a Cedar schema string or a JSON object
-    let parse_result: std::result::Result<Schema, miette::Report> = match &call.schema {
-        Value::String(s) => Schema::from_cedarschema_str(s)
-            .map(|(schema, _warnings)| schema)
-            .map_err(|e| miette::Report::new(e)),
-        json_val => Schema::from_json_value(json_val.clone()).map_err(|e| miette::Report::new(e)),
-    };
-    let ans: CheckParseAnswer = match parse_result {
-        Ok(parsed) => {
-            CACHED_SCHEMAS.insert(call.schema_name, parsed);
-            CheckParseAnswer::Success
-        }
-        Err(error) => CheckParseAnswer::Failure {
-            errors: vec![error.into()],
-        },
-    };
-    serde_json::to_string(&ans)
 }
 
 #[derive(Deserialize)]
@@ -298,7 +321,7 @@ fn json_stateful_is_authorized(input: &str) -> serde_json::Result<String> {
     };
 
     // Parse principal, action, resource via FFI EntityUid type
-    let principal: cedar_policy::ffi::EntityUid = match serde_json::from_value(call.principal) {
+    let principal: FfiEntityUid = match serde_json::from_value(call.principal) {
         Ok(p) => p,
         Err(e) => {
             return serde_json::to_string(&make_auth_failure(format!(
@@ -306,7 +329,7 @@ fn json_stateful_is_authorized(input: &str) -> serde_json::Result<String> {
             )));
         }
     };
-    let action: cedar_policy::ffi::EntityUid = match serde_json::from_value(call.action) {
+    let action: FfiEntityUid = match serde_json::from_value(call.action) {
         Ok(a) => a,
         Err(e) => {
             return serde_json::to_string(&make_auth_failure(format!(
@@ -314,7 +337,7 @@ fn json_stateful_is_authorized(input: &str) -> serde_json::Result<String> {
             )));
         }
     };
-    let resource: cedar_policy::ffi::EntityUid = match serde_json::from_value(call.resource) {
+    let resource: FfiEntityUid = match serde_json::from_value(call.resource) {
         Ok(r) => r,
         Err(e) => {
             return serde_json::to_string(&make_auth_failure(format!(
@@ -371,24 +394,6 @@ fn json_stateful_is_authorized(input: &str) -> serde_json::Result<String> {
         warnings: vec![],
     };
     serde_json::to_string(&ans)
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RemoveCachedIdCall {
-    id: String,
-}
-
-fn json_remove_cached_policy_set(input: &str) -> serde_json::Result<String> {
-    let call: RemoveCachedIdCall = serde_json::from_str(input)?;
-    CACHED_POLICY_SETS.remove(&call.id);
-    serde_json::to_string(&CheckParseAnswer::Success)
-}
-
-fn json_remove_cached_schema(input: &str) -> serde_json::Result<String> {
-    let call: RemoveCachedIdCall = serde_json::from_str(input)?;
-    CACHED_SCHEMAS.remove(&call.id);
-    serde_json::to_string(&CheckParseAnswer::Success)
 }
 
 #[derive(Serialize, Deserialize)]

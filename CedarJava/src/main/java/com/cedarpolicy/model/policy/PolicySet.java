@@ -20,10 +20,8 @@ import static com.cedarpolicy.CedarJson.objectWriter;
 import com.cedarpolicy.SharedCedarInternals;
 import com.cedarpolicy.loader.LibraryLoader;
 import com.cedarpolicy.model.exception.AuthException;
-import com.cedarpolicy.model.exception.BadRequestException;
 import com.cedarpolicy.model.exception.InternalException;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
 
 import java.util.Collections;
 import java.util.List;
@@ -193,18 +191,12 @@ public class PolicySet {
 
     private void preparseOnRustSide(String id) throws AuthException {
         try {
-            String input = objectWriter().writeValueAsString(
-                    new PreparsePolicySetRequest(id, this));
-            String response = SharedCedarInternals.callCedarJNI("PreparsePolicySet", input);
-            JsonNode node = new com.fasterxml.jackson.databind.ObjectMapper().readTree(response);
-            if (node.has("Failure")) {
-                throw new BadRequestException(
-                        new String[]{node.get("Failure").get("errors").toString()});
-            }
+            String policiesJson = objectWriter().writeValueAsString(this);
+            preparsePolicySetJni(id, policiesJson);
         } catch (JsonProcessingException e) {
             throw new AuthException("JSON Serialization Error", e);
-        } catch (IOException e) {
-            throw new AuthException("JSON Deserialization Error", e);
+        } catch (InternalException e) {
+            throw new AuthException("Failed to cache policy set", e);
         }
     }
 
@@ -217,23 +209,12 @@ public class PolicySet {
 
         @Override
         public void run() {
-            SharedCedarInternals.removeCachedPolicySet(id);
-        }
-    }
-
-    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-    private static final class PreparsePolicySetRequest {
-        @com.fasterxml.jackson.annotation.JsonProperty("policySetId")
-        final String policySetId;
-        @com.fasterxml.jackson.annotation.JsonProperty("policies")
-        final PolicySet policies;
-
-        PreparsePolicySetRequest(String policySetId, PolicySet policies) {
-            this.policySetId = policySetId;
-            this.policies = policies;
+            removeCachedPolicySetJni(id);
         }
     }
 
     private static native PolicySet parsePoliciesJni(String policiesStr) throws InternalException, NullPointerException;
     private static native String policySetToJson(String policySetStr) throws InternalException, NullPointerException;
+    private static native void preparsePolicySetJni(String id, String policiesJson) throws InternalException;
+    private static native void removeCachedPolicySetJni(String id);
 }

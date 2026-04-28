@@ -16,14 +16,12 @@
 
 package com.cedarpolicy.model.schema;
 
-import java.io.IOException;
 import java.util.Optional;
 import java.util.UUID;
 
 import com.cedarpolicy.SharedCedarInternals;
 import com.cedarpolicy.loader.LibraryLoader;
 import com.cedarpolicy.model.exception.AuthException;
-import com.cedarpolicy.model.exception.BadRequestException;
 import com.cedarpolicy.model.exception.InternalException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonMappingException;
@@ -232,24 +230,16 @@ public final class Schema {
         try {
             String schemaValue;
             if (type == JsonOrCedar.Cedar && schemaText.isPresent()) {
-                schemaValue = OBJECT_MAPPER.writeValueAsString(schemaText.get());
+                schemaValue = schemaText.get();
             } else if (type == JsonOrCedar.Json && schemaJson.isPresent()) {
                 schemaValue = schemaJson.get().toString();
             } else {
                 throw new AuthException("No schema content available");
             }
-            String input = "{\"schemaName\":" + OBJECT_MAPPER.writeValueAsString(id)
-                    + ",\"schema\":" + schemaValue + "}";
-            String response = SharedCedarInternals.callCedarJNI("PreparseSchema", input);
-            JsonNode node = OBJECT_MAPPER.readTree(response);
-            if (node.has("Failure")) {
-                throw new BadRequestException(
-                        new String[]{node.get("Failure").get("errors").toString()});
-            }
-        } catch (JsonProcessingException e) {
-            throw new AuthException("JSON Serialization Error", e);
-        } catch (IOException e) {
-            throw new AuthException("JSON Deserialization Error", e);
+            boolean isCedar = (type == JsonOrCedar.Cedar);
+            preparseSchemaJni(id, schemaValue, isCedar);
+        } catch (InternalException e) {
+            throw new AuthException("Failed to cache schema", e);
         }
     }
 
@@ -262,13 +252,17 @@ public final class Schema {
 
         @Override
         public void run() {
-            SharedCedarInternals.removeCachedSchema(id);
+            removeCachedSchemaJni(id);
         }
     }
 
     private static native String parseJsonSchemaJni(String schemaJson) throws InternalException, NullPointerException;
 
     private static native String parseCedarSchemaJni(String schemaText) throws InternalException, NullPointerException;
+
+    private static native void preparseSchemaJni(String id, String schemaValue, boolean isCedar) throws InternalException;
+
+    private static native void removeCachedSchemaJni(String id);
 
     private static native String jsonToCedarJni(String json) throws InternalException, NullPointerException;
 

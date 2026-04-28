@@ -16,8 +16,6 @@
 
 package com.cedarpolicy;
 
-import com.cedarpolicy.loader.LibraryLoader;
-
 import java.lang.ref.Cleaner;
 
 /**
@@ -28,10 +26,6 @@ import java.lang.ref.Cleaner;
  * Do not use this class directly.
  */
 public final class SharedCedarInternals {
-    static {
-        LibraryLoader.loadLibrary();
-    }
-
     private static final Cleaner CLEANER = Cleaner.create();
 
     private SharedCedarInternals() {
@@ -41,15 +35,4 @@ public final class SharedCedarInternals {
     public static Cleaner.Cleanable registerCleanup(Object referent, Runnable action) {
         return CLEANER.register(referent, action);
     }
-
-    /** Call through to the native JNI bridge. */
-    public static String callCedarJNI(String call, String input) {
-        return NativeHelpers.callCedarJNI(call, input);
-    }
-
-    /** Remove a cached policy set from the Rust-side cache by ID. */
-    public static native void removeCachedPolicySet(String id);
-
-    /** Remove a cached schema from the Rust-side cache by ID. */
-    public static native void removeCachedSchema(String id);
 }
