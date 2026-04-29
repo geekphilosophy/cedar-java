@@ -34,6 +34,7 @@ use jni::{
 use jni_fn::jni_fn;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
 use std::{error::Error, panic, str::FromStr};
 
@@ -62,6 +63,14 @@ thread_local! {
 
 static CACHED_POLICY_SETS: LazyLock<DashMap<String, PolicySet>> = LazyLock::new(DashMap::new);
 static CACHED_SCHEMAS: LazyLock<DashMap<String, Schema>> = LazyLock::new(DashMap::new);
+
+static MAX_CACHED_POLICY_SETS: AtomicUsize = AtomicUsize::new(1024);
+static MAX_CACHED_SCHEMAS: AtomicUsize = AtomicUsize::new(1024);
+
+/// Returns true if the cache is full and the entry should not be inserted.
+fn is_cache_full<V>(map: &DashMap<String, V>, max: usize) -> bool {
+    map.len() >= max
+}
 
 fn build_err_obj(env: &JNIEnv<'_>, err: &str) -> jstring {
     env.new_string(
@@ -145,6 +154,16 @@ pub fn preparsePolicySetJni(
     };
     match policy_set_ffi.parse() {
         Ok(parsed) => {
+            if is_cache_full(
+                &CACHED_POLICY_SETS,
+                MAX_CACHED_POLICY_SETS.load(Ordering::Relaxed),
+            ) {
+                let _ = env.throw_new(
+                    "com/cedarpolicy/model/exception/InternalException",
+                    "Policy set cache is full; increase cedar.cache.maxPolicySets or clear unused entries",
+                );
+                return;
+            }
             CACHED_POLICY_SETS.insert(id, parsed);
         }
         Err(errors) => {
@@ -206,6 +225,13 @@ pub fn preparseSchemaJni(
     };
     match parse_result {
         Ok(parsed) => {
+            if is_cache_full(&CACHED_SCHEMAS, MAX_CACHED_SCHEMAS.load(Ordering::Relaxed)) {
+                let _ = env.throw_new(
+                    "com/cedarpolicy/model/exception/InternalException",
+                    "Schema cache is full; increase cedar.cache.maxSchemas or clear unused entries",
+                );
+                return;
+            }
             CACHED_SCHEMAS.insert(id, parsed);
         }
         Err(error) => {
@@ -223,6 +249,22 @@ pub fn removeCachedSchemaJni(mut env: JNIEnv<'_>, _class: JClass<'_>, j_id: JStr
     if let Ok(id_str) = env.get_string(&j_id) {
         let id: String = id_str.into();
         CACHED_SCHEMAS.remove(&id);
+    }
+}
+
+/// Direct JNI entry point to set the max cached policy sets.
+#[jni_fn("com.cedarpolicy.model.policy.PolicySet")]
+pub fn setCacheMaxPolicySets(_env: JNIEnv<'_>, _class: JClass<'_>, max: i32) {
+    if max > 0 {
+        MAX_CACHED_POLICY_SETS.store(max as usize, Ordering::Relaxed);
+    }
+}
+
+/// Direct JNI entry point to set the max cached schemas.
+#[jni_fn("com.cedarpolicy.model.schema.Schema")]
+pub fn setCacheMaxSchemas(_env: JNIEnv<'_>, _class: JClass<'_>, max: i32) {
+    if max > 0 {
+        MAX_CACHED_SCHEMAS.store(max as usize, Ordering::Relaxed);
     }
 }
 

@@ -31,9 +31,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 /** Represents a schema. */
 public final class Schema {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final String PROP_MAX_CACHED = "cedar.cache.maxSchemas";
+    private static final int DEFAULT_MAX_CACHED = 1024;
 
     static {
         LibraryLoader.loadLibrary();
+        String maxProp = System.getProperty(PROP_MAX_CACHED);
+        if (maxProp != null) {
+            setCacheMaxSchemas(Integer.parseInt(maxProp));
+        }
     }
 
     /** Is this schema in the JSON or Cedar format */
@@ -195,6 +201,11 @@ public final class Schema {
      * <p>Caching is a one-way operation. To use a different schema, create a
      * new {@code Schema} instance.
      *
+     * <p><b>Important:</b> Do not mutate the schema fields after calling this
+     * method. The cached representation is a snapshot taken at the time of this
+     * call; subsequent mutations will not be reflected in authorization results
+     * that use the cached path.
+     *
      * <p>For the cached path to be used during authorization, both the schema
      * and the policy set must be cached. If the policy set is cached but the
      * schema is not, authorization will fall back to the uncached path.
@@ -208,9 +219,10 @@ public final class Schema {
             return;
         }
         String id = UUID.randomUUID().toString();
-        preparseOnRustSide(id);
-        cacheId = id;
-        SharedCedarInternals.registerCleanup(this, new SchemaCacheCleanup(id));
+        if (preparseOnRustSide(id)) {
+            cacheId = id;
+            SharedCedarInternals.registerCleanup(this, new SchemaCacheCleanup(id));
+        }
     }
 
     /**
@@ -226,7 +238,7 @@ public final class Schema {
         return Optional.of(id);
     }
 
-    private void preparseOnRustSide(String id) throws AuthException {
+    private boolean preparseOnRustSide(String id) throws AuthException {
         try {
             String schemaValue;
             if (type == JsonOrCedar.Cedar && schemaText.isPresent()) {
@@ -238,7 +250,11 @@ public final class Schema {
             }
             boolean isCedar = (type == JsonOrCedar.Cedar);
             preparseSchemaJni(id, schemaValue, isCedar);
+            return true;
         } catch (InternalException e) {
+            if (e.getMessage() != null && e.getMessage().contains("cache is full")) {
+                return false;
+            }
             throw new AuthException("Failed to cache schema", e);
         }
     }
@@ -263,6 +279,8 @@ public final class Schema {
     private static native void preparseSchemaJni(String id, String schemaValue, boolean isCedar) throws InternalException;
 
     private static native void removeCachedSchemaJni(String id);
+
+    private static native void setCacheMaxSchemas(int max);
 
     private static native String jsonToCedarJni(String json) throws InternalException, NullPointerException;
 

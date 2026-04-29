@@ -78,7 +78,15 @@ public final class BasicAuthorizationEngine implements AuthorizationEngine {
             if (!hasSchema || schemaKey.isPresent()) {
                 StatefulAuthRequest statefulReq = new StatefulAuthRequest(
                         q, policySetKey.get(), schemaKey.orElse(null), entities);
-                return call("StatefulAuthorizationOperation", AuthorizationResponse.class, statefulReq);
+                try {
+                    return call("StatefulAuthorizationOperation", AuthorizationResponse.class, statefulReq);
+                } catch (AuthException e) {
+                    if (e.getMessage() != null && e.getMessage().contains("not found")) {
+                        // Cache entry was evicted; fall back to uncached path
+                    } else {
+                        throw e;
+                    }
+                }
             }
         }
         final AuthorizationRequest request = new AuthorizationRequest(q, policySet, entities);

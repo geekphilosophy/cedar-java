@@ -36,8 +36,15 @@ import java.nio.file.Path;
 
 /** Policy set containing policies in the Cedar language. */
 public class PolicySet {
+    private static final String PROP_MAX_CACHED = "cedar.cache.maxPolicySets";
+    private static final int DEFAULT_MAX_CACHED = 1024;
+
     static {
         LibraryLoader.loadLibrary();
+        String maxProp = System.getProperty(PROP_MAX_CACHED);
+        if (maxProp != null) {
+            setCacheMaxPolicySets(Integer.parseInt(maxProp));
+        }
     }
 
     /** Static policies */
@@ -158,6 +165,12 @@ public class PolicySet {
      * <p>Caching is a one-way operation. To use a different policy set, create a
      * new {@code PolicySet} instance.
      *
+     * <p><b>Important:</b> Do not mutate the {@code policies}, {@code templates},
+     * or {@code templateLinks} fields after calling this method. The cached
+     * representation is a snapshot taken at the time of this call; subsequent
+     * mutations will not be reflected in authorization results that use the
+     * cached path.
+     *
      * <p>For the cached path to be used during authorization, both the policy set
      * and any associated schema must be cached. If only the policy set is cached
      * but the schema is not, authorization will fall back to the uncached path.
@@ -171,9 +184,10 @@ public class PolicySet {
             return;
         }
         String id = UUID.randomUUID().toString();
-        preparseOnRustSide(id);
-        cacheId = id;
-        SharedCedarInternals.registerCleanup(this, new PolicySetCacheCleanup(id));
+        if (preparseOnRustSide(id)) {
+            cacheId = id;
+            SharedCedarInternals.registerCleanup(this, new PolicySetCacheCleanup(id));
+        }
     }
 
     /**
@@ -189,13 +203,17 @@ public class PolicySet {
         return Optional.of(id);
     }
 
-    private void preparseOnRustSide(String id) throws AuthException {
+    private boolean preparseOnRustSide(String id) throws AuthException {
         try {
             String policiesJson = objectWriter().writeValueAsString(this);
             preparsePolicySetJni(id, policiesJson);
+            return true;
         } catch (JsonProcessingException e) {
             throw new AuthException("JSON Serialization Error", e);
         } catch (InternalException e) {
+            if (e.getMessage() != null && e.getMessage().contains("cache is full")) {
+                return false;
+            }
             throw new AuthException("Failed to cache policy set", e);
         }
     }
@@ -217,4 +235,5 @@ public class PolicySet {
     private static native String policySetToJson(String policySetStr) throws InternalException, NullPointerException;
     private static native void preparsePolicySetJni(String id, String policiesJson) throws InternalException;
     private static native void removeCachedPolicySetJni(String id);
+    private static native void setCacheMaxPolicySets(int max);
 }
